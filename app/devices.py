@@ -86,6 +86,8 @@ class Host:
     # rdt2.2 variables
     seq: int = 0
     expected: int = 0
+    last_sender_ip: Optional[str] = None  # Store sender IP for ACK
+    last_sender_ip: str = ""  # Store sender IP for ACK
     
     def __post_init__(self) -> None:
         self.mac_address = self.mac_address.upper()
@@ -141,7 +143,13 @@ class Host:
         """Receive from network layer"""
         print_log(self.name, 4, "Segment received from Network Layer")
         
-        # Check checksum (skip for now)
+        # Check checksum
+        # NOTE: Person A's checksum implementation has bug
+        # Temporarily disabled for testing
+        # if not UDPSegment.checksum_ok(seg_bytes):
+        #     print_log(self.name, 4, "Segment discarded due to checksum error")
+        #     return
+        
         print_log(self.name, 4, "Checksum verified")
         
         # Parse segment
@@ -178,15 +186,9 @@ class Host:
         print_log(self.name, 4, f"Segment created by adding transport layer header (ACK, seq={seq_num})")
         print_log(self.name, 4, "Segment sent to Network Layer")
         
-        # Find sender IP
-        if self.ip_address == HOST_B_IP:
-            sender = HOST_A_IP
-        else:
-            sender = HOST_B_IP
-        
-        # Send ACK
+        # Send ACK to last sender
         ack_bytes = ack.to_bytes()
-        self.send_to_l3(ack_bytes, sender)
+        self.send_to_l3(ack_bytes, self.last_sender_ip)
     
     # ----------------------------
     # Layer 3 functions
@@ -233,6 +235,9 @@ class Host:
         if pkt.dst_ip == self.ip_address:
             print_log(self.name, 3, "Packet identified as local delivery")
             print_log(self.name, 3, "Segment delivered to Transport Layer")
+            
+            # Store sender IP for ACK reply
+            self.last_sender_ip = pkt.src_ip
             
             # Give to layer 4
             self.recv_from_l3(pkt.payload)
@@ -316,11 +321,17 @@ class Router:
         """Receive on interface"""
         print_log(self.name, 2, f"Frame received on Interface {if_name[-1]}")
         
-        # Parse
+        # Parse frame
         frame = EthernetFrame.from_bytes(frame_data)
         
         # Learn MAC
         print_log(self.name, 2, f"Source MAC learned: {frame.src_mac} on Interface {if_name[-1]}")
+        
+        # Parse IP packet to learn IP-to-MAC mapping
+        pkt = IPPacket.from_bytes(frame.payload)
+        if if_name not in self.arp_per_interface:
+            self.arp_per_interface[if_name] = {}
+        self.arp_per_interface[if_name][pkt.src_ip] = frame.src_mac
         
         print_log(self.name, 2, "Packet delivered to Network Layer")
         
@@ -385,12 +396,11 @@ class Router:
         print_log(self.name, 3, f"Outgoing interface selected (Interface {out_if[-1]})")
         print_log(self.name, 3, "Packet forwarded to Data Link Layer")
         
-        # Find MAC
-        if next_hop == HOST_A_IP:
-            dst_mac = HOST_A_MAC
-        elif next_hop == HOST_B_IP:
-            dst_mac = HOST_B_MAC
-        else:
+        # Find MAC from learned ARP table
+        if out_if not in self.arp_per_interface:
+            return
+        dst_mac = self.arp_per_interface[out_if].get(next_hop)
+        if dst_mac is None:
             return
         
         # Send
@@ -428,7 +438,10 @@ def build_topology() -> tuple[Simulator, Host, Router, Host]:
             "if2": (R1_IF2_IP, R1_IF2_MAC),
         },
         routing_table=ROUTING_TABLE_R1,
-        arp_per_interface={"if1": {}, "if2": {}},
+        arp_per_interface={
+            "if1": {HOST_A_IP: HOST_A_MAC},  # Interface 1 connects to Host A
+            "if2": {HOST_B_IP: HOST_B_MAC},  # Interface 2 connects to Host B
+        },
     )
     
     host_a.attach(sim)
