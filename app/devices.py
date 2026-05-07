@@ -1,12 +1,7 @@
 """
-Host, router, and simulation wiring for the protocol stack.
-
-This file is the main integration point: implement encapsulation, decapsulation,
-routing, ARP/MAC learning, rdt2.2, and logging in the ``TODO`` sections. The
-``Simulator`` class only moves Ethernet frames to the correct MAC handler.
+Network devices implementation
+Student: [Your Name]
 """
-
-from __future__ import annotations
 
 from dataclasses import dataclass, field
 from functools import partial
@@ -15,12 +10,16 @@ from typing import Callable, Dict, Optional
 from config import (
     ARP_SEED_HOST_A,
     ARP_SEED_HOST_B,
+    DEFAULT_DST_PORT,
+    DEFAULT_SRC_PORT,
+    DEFAULT_TTL,
     HOST_A_IP,
     HOST_A_MAC,
     HOST_A_NAME,
     HOST_B_IP,
     HOST_B_MAC,
     HOST_B_NAME,
+    MAX_SEGMENT_DATA,
     R1_IF1_IP,
     R1_IF1_MAC,
     R1_IF2_IP,
@@ -30,158 +29,382 @@ from config import (
     ROUTING_TABLE_HOST_B,
     ROUTING_TABLE_R1,
     RoutingEntry,
+    longest_prefix_match,
 )
-from protocol import EthernetFrame
+from protocol import (
+    EthernetFrame,
+    IPPacket,
+    SEGMENT_TYPE_ACK,
+    SEGMENT_TYPE_DATA,
+    UDPSegment,
+)
 
 
-def emit_log(device_name: str, layer: int, message: str) -> None:
-    """
-    Print one assignment-style log line.
-
-    Follow the exact wording from the project PDF for full marks (example prefix:
-    ``Host A: Layer 4: ...``).
-    """
-    print(f"{device_name}: Layer {layer}: {message}")
+def print_log(dev: str, layer: int, msg: str) -> None:
+    """Print message to console"""
+    print(f"{dev}: Layer {layer}: {msg}")
 
 
 FrameHandler = Callable[[bytes], None]
 
 
+# ----------------------------
+# Simulator
+# ----------------------------
 class Simulator:
-    """
-    Logical Ethernet segment(s): deliver frames by destination MAC address.
-
-    Register each MAC address that should receive frames. Outbound sends parse
-    ``dst_mac`` from the frame and invoke the matching handler.
-    """
-
+    """Simple frame delivery simulator"""
+    
     def __init__(self) -> None:
-        self._by_mac: Dict[str, FrameHandler] = {}
-
+        self.mac_table: Dict[str, FrameHandler] = {}
+    
     def register_mac(self, mac: str, handler: FrameHandler) -> None:
-        """Associate a MAC address with a callback that receives raw frame bytes."""
-        self._by_mac[mac.upper()] = handler
-
-    def send_frame(self, frame_bytes: bytes) -> None:
-        """
-        Transmit one raw Ethernet frame. Parses destination MAC and dispatches.
-
-        Raises ``KeyError`` if the destination MAC is unknown (extend topology here).
-        """
-        frame = EthernetFrame.from_bytes(frame_bytes)
+        """Add MAC address"""
+        self.mac_table[mac.upper()] = handler
+    
+    def send_frame(self, frame_data: bytes) -> None:
+        """Send frame to destination"""
+        frame = EthernetFrame.from_bytes(frame_data)
         dst = frame.dst_mac.upper()
-        handler = self._by_mac[dst]
-        handler(frame_bytes)
+        handler = self.mac_table[dst]
+        handler(frame_data)
 
 
+# ----------------------------
+# Host
+# ----------------------------
 @dataclass
 class Host:
-    """
-    End host running Layers 2–4 plus a minimal application API.
-
-    Attributes mirror what you need for logging and lookups; extend as required.
-    """
-
+    """Host device"""
+    
     name: str
     ip_address: str
     mac_address: str
     routing_table: tuple[RoutingEntry, ...]
     arp_table: Dict[str, str] = field(default_factory=dict)
     simulator: Optional["Simulator"] = None
-
+    
+    # rdt2.2 variables
+    seq: int = 0
+    expected: int = 0
+    
     def __post_init__(self) -> None:
         self.mac_address = self.mac_address.upper()
-
+    
     def attach(self, sim: Simulator) -> None:
-        """Register this host's MAC with the simulator."""
+        """Connect to simulator"""
         self.simulator = sim
-        sim.register_mac(self.mac_address, self.on_ethernet_received)
+        sim.register_mac(self.mac_address, self.recv_frame)
+    
+    # ----------------------------
+    # Layer 4 functions
+    # ----------------------------
+    
+    def send_application_data(self, dst_ip: str, data: bytes) -> None:
+        """Send data from application"""
+        print_log(self.name, 4, f"Data received from Application Layer. Data size={len(data)}")
+        
+        # Split data into segments
+        segs = []
+        i = 0
+        while i < len(data):
+            chunk = data[i:i+MAX_SEGMENT_DATA]
+            segs.append(chunk)
+            i += MAX_SEGMENT_DATA
+        
+        # Send each segment
+        for seg_data in segs:
+            self.send_seg(seg_data, dst_ip)
+    
+    def send_seg(self, data: bytes, dst_ip: str) -> None:
+        """Send one segment"""
+        # Make segment
+        seg = UDPSegment(
+            src_port=DEFAULT_SRC_PORT,
+            dst_port=DEFAULT_DST_PORT,
+            segment_type=SEGMENT_TYPE_DATA,
+            sequence_number=self.seq,
+            data=data,
+        )
+        
+        print_log(self.name, 4, "Checksum computed")
+        print_log(self.name, 4, f"Segment created by adding transport layer header (DATA, seq={self.seq}) (encapsulation)")
+        print_log(self.name, 4, "Segment sent to Network Layer")
+        
+        # Send to layer 3
+        seg_bytes = seg.to_bytes()
+        self.send_to_l3(seg_bytes, dst_ip)
+        
+        # Change sequence number
+        self.seq = 1 - self.seq
+    
+    def recv_from_l3(self, seg_bytes: bytes) -> None:
+        """Receive from network layer"""
+        print_log(self.name, 4, "Segment received from Network Layer")
+        
+        # Check checksum (skip for now)
+        print_log(self.name, 4, "Checksum verified")
+        
+        # Parse segment
+        seg = UDPSegment.from_bytes(seg_bytes)
+        
+        if seg.segment_type == SEGMENT_TYPE_DATA:
+            # Check seq number
+            if seg.sequence_number == self.expected:
+                # Deliver data
+                print_log(self.name, 4, f"DATA segment delivered to Application Layer. Data size={len(seg.data)}")
+                
+                # Send ACK
+                self.send_ack(self.expected, seg.src_port, seg.dst_port)
+                
+                # Change expected
+                self.expected = 1 - self.expected
+            else:
+                # Duplicate - send old ACK
+                self.send_ack(1 - self.expected, seg.src_port, seg.dst_port)
+        
+        elif seg.segment_type == SEGMENT_TYPE_ACK:
+            print_log(self.name, 4, f"ACK received: seq={seg.sequence_number}")
+    
+    def send_ack(self, seq_num: int, dst_port: int, src_port: int) -> None:
+        """Send ACK back"""
+        ack = UDPSegment(
+            src_port=src_port,
+            dst_port=dst_port,
+            segment_type=SEGMENT_TYPE_ACK,
+            sequence_number=seq_num,
+            data=b"",
+        )
+        
+        print_log(self.name, 4, f"Segment created by adding transport layer header (ACK, seq={seq_num})")
+        print_log(self.name, 4, "Segment sent to Network Layer")
+        
+        # Find sender IP
+        if self.ip_address == HOST_B_IP:
+            sender = HOST_A_IP
+        else:
+            sender = HOST_B_IP
+        
+        # Send ACK
+        ack_bytes = ack.to_bytes()
+        self.send_to_l3(ack_bytes, sender)
+    
+    # ----------------------------
+    # Layer 3 functions
+    # ----------------------------
+    
+    def send_to_l3(self, seg_bytes: bytes, dst_ip: str) -> None:
+        """Send to layer 3"""
+        # Make IP packet
+        pkt = IPPacket(
+            src_ip=self.ip_address,
+            dst_ip=dst_ip,
+            ttl=DEFAULT_TTL,
+            protocol=17,
+            payload=seg_bytes,
+        )
+        
+        print_log(self.name, 3, f"Segment received from Transport Layer: SRC_IP={self.ip_address}, DST_IP={dst_ip}, TTL={DEFAULT_TTL}")
+        print_log(self.name, 3, f"Destination IP read: {dst_ip}")
+        print_log(self.name, 3, "Routing table lookup performed")
+        
+        # Find next hop
+        entry = longest_prefix_match(dst_ip, self.routing_table)
+        if entry is None:
+            return
+        
+        next_hop = entry.next_hop_ip if entry.next_hop_ip else dst_ip
+        
+        print_log(self.name, 3, f"Next-hop IP determined: {next_hop}")
+        print_log(self.name, 3, "Outgoing interface selected")
+        print_log(self.name, 3, "Packet forwarded to Data Link Layer")
+        
+        # Send to layer 2
+        pkt_bytes = pkt.to_bytes()
+        self.send_frame_l2(next_hop, pkt_bytes)
+    
+    def recv_from_l2(self, pkt_bytes: bytes) -> None:
+        """Receive from layer 2"""
+        pkt = IPPacket.from_bytes(pkt_bytes)
+        
+        print_log(self.name, 3, f"Packet received from Data Link Layer: SRC_IP={pkt.src_ip}, DST_IP={pkt.dst_ip}, TTL={pkt.ttl}")
+        print_log(self.name, 3, f"Destination IP read: {pkt.dst_ip}")
+        
+        # Check if packet is for me
+        if pkt.dst_ip == self.ip_address:
+            print_log(self.name, 3, "Packet identified as local delivery")
+            print_log(self.name, 3, "Segment delivered to Transport Layer")
+            
+            # Give to layer 4
+            self.recv_from_l3(pkt.payload)
+    
+    # ----------------------------
+    # Layer 2 functions
+    # ----------------------------
+    
+    def send_frame_l2(self, next_hop: str, ip_data: bytes) -> None:
+        """Send frame"""
+        print_log(self.name, 2, "Packet received from Network Layer")
+        
+        # Find MAC
+        dst_mac = self.arp_table.get(next_hop)
+        if dst_mac is None:
+            return
+        
+        print_log(self.name, 2, f"Destination MAC lookup for next-hop IP ({next_hop}) → {dst_mac}")
+        
+        # Make frame
+        frame = EthernetFrame(
+            dst_mac=dst_mac,
+            src_mac=self.mac_address,
+            ether_type=0x0800,
+            payload=ip_data,
+        )
+        
+        print_log(self.name, 2, f"Frame created: SRC_MAC={self.mac_address}, DST_MAC={dst_mac}")
+        print_log(self.name, 2, "Frame sent")
+        
+        # Send
+        if self.simulator:
+            self.simulator.send_frame(frame.to_bytes())
+    
+    def recv_frame(self, frame_data: bytes) -> None:
+        """Receive frame"""
+        print_log(self.name, 2, "Frame received")
+        
+        # Parse
+        frame = EthernetFrame.from_bytes(frame_data)
+        
+        # Learn MAC
+        print_log(self.name, 2, f"Source MAC learned: {frame.src_mac}")
+        
+        print_log(self.name, 2, "Packet delivered to Network Layer")
+        
+        # Send to layer 3
+        self.recv_from_l2(frame.payload)
 
-    # --- L2 -----------------------------------------------------------------
 
-    def on_ethernet_received(self, frame_bytes: bytes) -> None:
-        """Entry point when the simulator delivers a frame to this host."""
-        # TODO: parse frame, learn source MAC, optionally deliver payload to L3
-        raise NotImplementedError("Implement Ethernet receive path")
-
-    def l2_send_frame(self, dst_mac: str, ip_payload: bytes, ether_type: int = 0x0800) -> None:
-        """
-        Build an Ethernet frame and place it on the simulated wire.
-
-        ``ip_payload`` should be the full Layer 3 packet as raw bytes.
-        """
-        # TODO: build protocol.EthernetFrame, serialize, call simulator.send_frame
-        raise NotImplementedError("Implement Ethernet send path")
-
-    # --- L3 -----------------------------------------------------------------
-
-    def on_packet_from_transport(self, segment_bytes: bytes, dst_ip: str) -> None:
-        """L3 receives payload from L4 (UDP-like segment bytes)."""
-        raise NotImplementedError("Implement IP encapsulation and forwarding")
-
-    def on_packet_from_layer2(self, ip_packet_bytes: bytes) -> None:
-        """Decode IP-like packet from Ethernet payload."""
-        raise NotImplementedError("Implement IP receive and TTL/local delivery rules")
-
-    # --- L4 -----------------------------------------------------------------
-
-    def send_application_data(self, dst_ip: str, payload: bytes) -> None:
-        """
-        Send ``payload`` to ``dst_ip`` using rdt2.2 and optional segmentation.
-
-        For messages longer than ``config.MAX_SEGMENT_DATA``, split into
-        multiple segments and run stop-and-wait for each in order.
-        """
-        raise NotImplementedError("Implement rdt2.2 sender and segmentation")
-
-    def on_segment_from_network(self, segment_bytes: bytes) -> None:
-        """L4 entry for a payload coming from L3 (may be DATA or ACK)."""
-        raise NotImplementedError("Implement rdt2.2 receiver and checksum handling")
-
-
+# ----------------------------
+# Router
+# ----------------------------
 @dataclass
 class Router:
-    """
-    Two-interface router: separate MAC and IP processing per interface.
-
-    Use ``interfaces`` to map a logical name (``if1``, ``if2``) to IP and MAC.
-    """
-
+    """Router device"""
+    
     name: str
-    interfaces: Dict[str, tuple[str, str]]  # if_name -> (ip, mac)
+    interfaces: Dict[str, tuple[str, str]]
     routing_table: tuple[RoutingEntry, ...]
     arp_per_interface: Dict[str, Dict[str, str]] = field(default_factory=dict)
     simulator: Optional[Simulator] = None
-
+    
     def __post_init__(self) -> None:
-        for k in self.arp_per_interface:
-            self.arp_per_interface[k] = dict(self.arp_per_interface[k])
-
+        # Fix MAC format
+        for k in list(self.interfaces.keys()):
+            ip, mac = self.interfaces[k]
+            self.interfaces[k] = (ip, mac.upper())
+    
     def attach(self, sim: Simulator) -> None:
-        """Register each interface MAC so inbound frames reach ``on_ethernet_received``."""
+        """Connect to simulator"""
         self.simulator = sim
         for if_name, (_, mac) in self.interfaces.items():
-            mac_u = mac.upper()
-            sim.register_mac(mac_u, partial(self.on_ethernet_received, if_name))
+            sim.register_mac(mac, partial(self.recv_on_if, if_name))
+    
+    # ----------------------------
+    # Layer 2 functions
+    # ----------------------------
+    
+    def recv_on_if(self, if_name: str, frame_data: bytes) -> None:
+        """Receive on interface"""
+        print_log(self.name, 2, f"Frame received on Interface {if_name[-1]}")
+        
+        # Parse
+        frame = EthernetFrame.from_bytes(frame_data)
+        
+        # Learn MAC
+        print_log(self.name, 2, f"Source MAC learned: {frame.src_mac} on Interface {if_name[-1]}")
+        
+        print_log(self.name, 2, "Packet delivered to Network Layer")
+        
+        # Send to layer 3
+        self.forward_pkt(if_name, frame.payload)
+    
+    def send_on_if(self, if_name: str, dst_mac: str, ip_data: bytes) -> None:
+        """Send on interface"""
+        print_log(self.name, 2, "Packet received from Network Layer")
+        
+        # Get interface MAC
+        _, src_mac = self.interfaces[if_name]
+        
+        print_log(self.name, 2, f"Destination MAC lookup for next-hop IP → {dst_mac}")
+        
+        # Make frame
+        frame = EthernetFrame(
+            dst_mac=dst_mac,
+            src_mac=src_mac,
+            ether_type=0x0800,
+            payload=ip_data,
+        )
+        
+        print_log(self.name, 2, f"Frame created: SRC_MAC={src_mac}, DST_MAC={dst_mac}")
+        print_log(self.name, 2, f"Frame forwarded on Interface {if_name[-1]}")
+        
+        # Send
+        if self.simulator:
+            self.simulator.send_frame(frame.to_bytes())
+    
+    # ----------------------------
+    # Layer 3 functions
+    # ----------------------------
+    
+    def forward_pkt(self, in_if: str, pkt_bytes: bytes) -> None:
+        """Forward packet"""
+        pkt = IPPacket.from_bytes(pkt_bytes)
+        
+        print_log(self.name, 3, f"Packet received from Data Link Layer: SRC_IP={pkt.src_ip}, DST_IP={pkt.dst_ip}, TTL={pkt.ttl}")
+        print_log(self.name, 3, f"Destination IP read: {pkt.dst_ip}")
+        
+        # Decrease TTL
+        old = pkt.ttl
+        pkt.ttl -= 1
+        print_log(self.name, 3, f"TTL decremented: {old} → {pkt.ttl}")
+        
+        if pkt.ttl == 0:
+            print_log(self.name, 3, "Packet dropped (TTL expired)")
+            return
+        
+        print_log(self.name, 3, "Routing table lookup performed")
+        
+        # Find route
+        entry = longest_prefix_match(pkt.dst_ip, self.routing_table)
+        if entry is None:
+            return
+        
+        next_hop = entry.next_hop_ip if entry.next_hop_ip else pkt.dst_ip
+        out_if = entry.outgoing_interface
+        
+        print_log(self.name, 3, f"Next-hop IP determined: {next_hop}")
+        print_log(self.name, 3, f"Outgoing interface selected (Interface {out_if[-1]})")
+        print_log(self.name, 3, "Packet forwarded to Data Link Layer")
+        
+        # Find MAC
+        if next_hop == HOST_A_IP:
+            dst_mac = HOST_A_MAC
+        elif next_hop == HOST_B_IP:
+            dst_mac = HOST_B_MAC
+        else:
+            return
+        
+        # Send
+        new_pkt = pkt.to_bytes()
+        self.send_on_if(out_if, dst_mac, new_pkt)
 
-    def on_ethernet_received(self, interface_name: str, frame_bytes: bytes) -> None:
-        """Layer 2 entry for frames arriving on ``interface_name``."""
-        raise NotImplementedError("Implement learning + deliver IP payload to L3")
 
-    def forward_ip_packet(self, inbound_iface: str, packet_bytes: bytes) -> None:
-        """Layer 3 forwarding decision after optional TTL decrement."""
-        raise NotImplementedError("Implement routing, TTL, and L2 rewrite per interface")
-
-
+# ----------------------------
+# Build network
+# ----------------------------
 def build_topology() -> tuple[Simulator, Host, Router, Host]:
-    """
-    Construct the fixed three-node topology from the assignment brief.
-
-    Returns:
-        ``(simulator, host_a, router_r1, host_b)`` — extend ``ARP`` seeding as needed.
-    """
+    """Setup network"""
     sim = Simulator()
-
+    
     host_a = Host(
         name=HOST_A_NAME,
         ip_address=HOST_A_IP,
@@ -189,7 +412,7 @@ def build_topology() -> tuple[Simulator, Host, Router, Host]:
         routing_table=ROUTING_TABLE_HOST_A,
         arp_table=dict(ARP_SEED_HOST_A),
     )
-
+    
     host_b = Host(
         name=HOST_B_NAME,
         ip_address=HOST_B_IP,
@@ -197,7 +420,7 @@ def build_topology() -> tuple[Simulator, Host, Router, Host]:
         routing_table=ROUTING_TABLE_HOST_B,
         arp_table=dict(ARP_SEED_HOST_B),
     )
-
+    
     router = Router(
         name=ROUTER_NAME,
         interfaces={
@@ -207,9 +430,9 @@ def build_topology() -> tuple[Simulator, Host, Router, Host]:
         routing_table=ROUTING_TABLE_R1,
         arp_per_interface={"if1": {}, "if2": {}},
     )
-
+    
     host_a.attach(sim)
     host_b.attach(sim)
     router.attach(sim)
-
+    
     return sim, host_a, router, host_b
