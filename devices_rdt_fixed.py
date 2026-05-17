@@ -61,9 +61,9 @@ class Host:
         self.sim = None
         
         # For rdt2.2 protocol
-        self.current_seq = 0          # Current sequence number
-        self.expect_seq = 0           # Expected sequence number
-        self.sender_ip = None         # Store sender IP for reply
+        self.current_seq = 0          # Current DATA sequence number to send
+        self.expect_seq = 0           # Expected DATA sequence number to receive
+        self.sender_ip = None         # Store sender IP for ACK reply
 
         # Sender-side rdt2.2 state
         self.waiting_for_ack = False
@@ -106,20 +106,20 @@ class Host:
     
     def send_one_segment(self, seg_data, dest_ip):
         """
-        Send one segment to destination.
-        Use current sequence number (0 or 1).
+        Send one DATA segment using rdt2.2.
+        The sender waits for the correct ACK before moving to the next sequence number.
+        If an incorrect/duplicate ACK is received, the same DATA segment is retransmitted.
         """
         seq = self.current_seq
 
-        # Make the segment
+        # Make the DATA segment once and keep it as the pending segment
         segment = UDPSegment(
             src_port=DEFAULT_SRC_PORT,
             dst_port=DEFAULT_DST_PORT,
             segment_type=SEGMENT_TYPE_DATA,
-            sequence_number=self.current_seq,
+            sequence_number=seq,
             data=seg_data
         )
-
         seg_bytes = segment.to_bytes()
 
         self.pending_ack_seq = seq
@@ -131,20 +131,17 @@ class Host:
         attempts = 0
         while self.waiting_for_ack and attempts <= self.max_retransmissions:
             if attempts == 0:
-                # In recv_from_net_layer(), before parsing:
-                if not UDPSegment.checksum_ok(segment.to_bytes()):
-                    print_log(self.name, 4, "Segment discarded due to checksum error")
-                    # if receiver has last ACK, resend it
-                    return
-                print_log(self.name, 4, "Segment checksum ok!")
-                print_log(self.name, 4, f"Segment created by adding transport layer header (DATA, seq={self.current_seq}) (encapsulation)")
+                print_log(self.name, 4, "Checksum computed")
+                print_log(self.name, 4, f"Segment created by adding transport layer header (DATA, seq={seq}) (encapsulation)")
+                print_log(self.name, 4, "Segment sent to Network Layer")
             else:
                 print_log(self.name, 4, f"Segment retransmitted due to incorrect ACK (DATA, seq={seq})")
                 print_log(self.name, 4, "Segment sent to Network Layer")
 
-
-            attempts += 1
+            # In this simulator, send_to_net_layer() is synchronous: the ACK is received
+            # before this call returns if the packet successfully reaches the receiver.
             self.send_to_net_layer(seg_bytes, dest_ip)
+            attempts += 1
 
             if self.ack_received:
                 break
@@ -161,8 +158,7 @@ class Host:
         self.pending_segment_bytes = None
         self.pending_dest_ip = None
         self.ack_received = False
-
-
+    
     def recv_from_net_layer(self, seg_bytes):
         """
         Receive segment from network layer.
@@ -176,20 +172,19 @@ class Host:
         
         if segment.segment_type == SEGMENT_TYPE_DATA:
             # This is DATA segment
-            # Check if sequence number is correct
             if segment.sequence_number == self.expect_seq:
                 # Correct sequence: deliver data and ACK this sequence
                 print_log(self.name, 4, f"DATA segment delivered to Application Layer. Data size={len(segment.data)}")
                 self.send_ack(self.expect_seq)
                 self.last_ack_seq = self.expect_seq
-                self.expect_seq = 1 - self.expect_seq  
+                self.expect_seq = 1 - self.expect_seq
             else:
                 # Duplicate DATA segment: do not deliver again; resend last ACK
                 print_log(self.name, 4, f"Duplicate DATA segment received: seq={segment.sequence_number}")
                 if self.last_ack_seq is not None:
                     print_log(self.name, 4, f"Re-sending last ACK: seq={self.last_ack_seq}")
                     self.send_ack(self.last_ack_seq)
-              
+        
         elif segment.segment_type == SEGMENT_TYPE_ACK:
             print_log(self.name, 4, f"ACK received: seq={segment.sequence_number}")
 
@@ -200,7 +195,7 @@ class Host:
             elif self.waiting_for_ack:
                 # Wrong/duplicate ACK: keep waiting; send_one_segment() will retransmit
                 print_log(self.name, 4, f"Incorrect or duplicate ACK received: expected seq={self.pending_ack_seq}, got seq={segment.sequence_number}")
-            
+    
     def send_ack(self, ack_seq):
         """Create and send an ACK segment with the given sequence number."""
         ack_segment = UDPSegment(
@@ -209,14 +204,15 @@ class Host:
             segment_type=SEGMENT_TYPE_ACK,
             sequence_number=ack_seq,
             data=b""
-    )
+        )
+
         print_log(self.name, 4, f"Segment created by adding transport layer header (ACK, seq={ack_seq})")
         print_log(self.name, 4, f"ACK sent: seq={ack_seq}")
         print_log(self.name, 4, "Segment sent to Network Layer")
 
         ack_bytes = ack_segment.to_bytes()
         self.send_to_net_layer(ack_bytes, self.sender_ip)
-        
+
     # ----------------------------
     # Layer 3 Functions
     # ----------------------------
@@ -422,6 +418,23 @@ class Router:
         if self.sim:
             self.sim.send_frame(eth_frame.to_bytes())
     
+    def send_ack(self, ack_seq):
+        """Create and send an ACK segment with the given sequence number."""
+        ack_segment = UDPSegment(
+            src_port=DEFAULT_DST_PORT,
+            dst_port=DEFAULT_SRC_PORT,
+            segment_type=SEGMENT_TYPE_ACK,
+            sequence_number=ack_seq,
+            data=b""
+        )
+
+        print_log(self.name, 4, f"Segment created by adding transport layer header (ACK, seq={ack_seq})")
+        print_log(self.name, 4, f"ACK sent: seq={ack_seq}")
+        print_log(self.name, 4, "Segment sent to Network Layer")
+
+        ack_bytes = ack_segment.to_bytes()
+        self.send_to_net_layer(ack_bytes, self.sender_ip)
+
     # ----------------------------
     # Layer 3 Functions
     # ----------------------------
