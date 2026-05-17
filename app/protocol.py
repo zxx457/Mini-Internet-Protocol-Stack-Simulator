@@ -139,11 +139,12 @@ class UDPSegment:
 
     @staticmethod
     def checksum_ok(raw: bytes) -> bool:
-        """Validate one's-complement checksum over an on-wire segment (checksum field zeroed)."""
         if len(raw) < UDP_HEADER_LEN:
             return False
-        zeroed = raw[:6] + b"\x00\x00" + raw[8:]
-        return _ones_complement_sum(zeroed) == 0xFFFF
+        seg_len = int.from_bytes(raw[4:6], "big")
+        if seg_len > len(raw):
+            return False
+        return _ones_complement_sum(raw[:seg_len]) == 0xFFFF
 
 
 @dataclass

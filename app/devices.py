@@ -3,11 +3,13 @@
 
 from config import *
 from protocol import *
+import time
 
 
 def print_log(dev_name, layer_num, message):
     """Print the log for testing"""
     print(f"{dev_name}: Layer {layer_num}: {message}")
+    time.sleep(0.2)
 
 
 # ----------------------------
@@ -105,13 +107,19 @@ class Host:
             data=seg_data
         )
         
-        print_log(self.name, 4, "Checksum computed")
+        # In recv_from_net_layer(), before parsing:
+        if not UDPSegment.checksum_ok(segment.to_bytes()):
+            print_log(self.name, 4, "Segment discarded due to checksum error")
+            # if receiver has last ACK, resend it
+            return
+        
+        print_log(self.name, 4, "Segment checksum ok!")
         print_log(self.name, 4, f"Segment created by adding transport layer header (DATA, seq={self.current_seq}) (encapsulation)")
-        print_log(self.name, 4, "Segment sent to Network Layer")
         
         # Convert to bytes and send to network layer
         seg_bytes = segment.to_bytes()
         self.send_to_net_layer(seg_bytes, dest_ip)
+        print_log(self.name, 4, "Segment sent to Network Layer")
         
         # Change sequence number (0->1 or 1->0)
         self.current_seq = 1 - self.current_seq
