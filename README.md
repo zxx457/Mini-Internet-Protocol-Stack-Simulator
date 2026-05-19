@@ -34,7 +34,7 @@ Host
   └─ Layer 2 methods (send_frame_out, recv_frame)
 
 Router
-  ├─ Layer 3 methods (do_forwarding)
+  ├─ Layer 3 methods (forward_packet)
   └─ Layer 2 methods (recv_on_interface, send_on_interface)
 ```
 

@@ -2,7 +2,7 @@
 
 import sys
 from config import HOST_B_IP
-from devices import build_topology
+from devices import make_network
 
 
 def main():
@@ -22,7 +22,7 @@ def main():
         return 1
     
     # Build network
-    sim, host_a, router, host_b = build_topology()
+    sim, host_a, router, host_b = make_network()
     
     # Make message
     message = bytes((i % 256) for i in range(size))

@@ -6,9 +6,9 @@ from protocol import *
 import time
 
 
-def print_log(dev_name, layer_num, message):
-    """Print the log for testing"""
-    print(f"{dev_name}: Layer {layer_num}: {message}")
+def log(name, layer, msg):
+    """Print one layer log line."""
+    print(f"{name}: Layer {layer}: {msg}")
 
 
 # ----------------------------
@@ -89,7 +89,7 @@ class Host:
         This function send data from application layer.
         It will split data into segments if data is big.
         """
-        print_log(self.name, 4, f"Data received from Application Layer. Data size={len(app_data)}")
+        log(self.name, 4, f"Data received from Application Layer. Data size={len(app_data)}")
         
         # Make segments list
         seg_list = []
@@ -132,14 +132,14 @@ class Host:
             if attempts == 0:
                 # In recv_from_net_layer(), before parsing:
                 if not UDPSegment.checksum_ok(segment.to_bytes()):
-                    print_log(self.name, 4, "Segment discarded due to checksum error")
+                    log(self.name, 4, "Segment discarded due to checksum error")
                     # if receiver has last ACK, resend it
                     return
-                print_log(self.name, 4, "Segment checksum ok!")
-                print_log(self.name, 4, f"Segment created by adding transport layer header (DATA, seq={self.current_seq}) (encapsulation)")
+                log(self.name, 4, "Segment checksum ok!")
+                log(self.name, 4, f"Segment created by adding transport layer header (DATA, seq={self.current_seq}) (encapsulation)")
             else:
-                print_log(self.name, 4, f"Segment retransmitted due to incorrect ACK (DATA, seq={seq})")
-                print_log(self.name, 4, "Segment sent to Network Layer")
+                log(self.name, 4, f"Segment retransmitted due to incorrect ACK (DATA, seq={seq})")
+                log(self.name, 4, "Segment sent to Network Layer")
 
 
             attempts += 1
@@ -152,7 +152,7 @@ class Host:
             # Only now is it safe to alternate the sequence number
             self.current_seq = 1 - self.current_seq
         else:
-            print_log(self.name, 4, f"Transmission failed after {self.max_retransmissions} retransmissions")
+            log(self.name, 4, f"Transmission failed after {self.max_retransmissions} retransmissions")
 
         # Clear sender-side pending state
         self.waiting_for_ack = False
@@ -166,8 +166,8 @@ class Host:
         Receive segment from network layer.
         Check the type and process it.
         """
-        print_log(self.name, 4, "Segment received from Network Layer")
-        print_log(self.name, 4, "Checksum verified")
+        log(self.name, 4, "Segment received from Network Layer")
+        log(self.name, 4, "Checksum verified")
         
         # Parse the segment
         segment = UDPSegment.from_bytes(seg_bytes)
@@ -177,19 +177,19 @@ class Host:
             # Check if sequence number is correct
             if segment.sequence_number == self.expect_seq:
                 # Correct sequence: deliver data and ACK this sequence
-                print_log(self.name, 4, f"DATA segment delivered to Application Layer. Data size={len(segment.data)}")
+                log(self.name, 4, f"DATA segment delivered to Application Layer. Data size={len(segment.data)}")
                 self.send_ack(self.expect_seq)
                 self.last_ack_seq = self.expect_seq
                 self.expect_seq = 1 - self.expect_seq  
             else:
                 # Duplicate DATA segment: do not deliver again; resend last ACK
-                print_log(self.name, 4, f"Duplicate DATA segment received: seq={segment.sequence_number}")
+                log(self.name, 4, f"Duplicate DATA segment received: seq={segment.sequence_number}")
                 if self.last_ack_seq is not None:
-                    print_log(self.name, 4, f"Re-sending last ACK: seq={self.last_ack_seq}")
+                    log(self.name, 4, f"Re-sending last ACK: seq={self.last_ack_seq}")
                     self.send_ack(self.last_ack_seq)
               
         elif segment.segment_type == SEGMENT_TYPE_ACK:
-            print_log(self.name, 4, f"ACK received: seq={segment.sequence_number}")
+            log(self.name, 4, f"ACK received: seq={segment.sequence_number}")
 
             # Sender side: correct ACK means the pending DATA segment is complete
             if self.waiting_for_ack and segment.sequence_number == self.pending_ack_seq:
@@ -197,7 +197,7 @@ class Host:
                 self.waiting_for_ack = False
             elif self.waiting_for_ack:
                 # Wrong/duplicate ACK: keep waiting; send_one_segment() will retransmit
-                print_log(self.name, 4, f"Incorrect or duplicate ACK received: expected seq={self.pending_ack_seq}, got seq={segment.sequence_number}")
+                log(self.name, 4, f"Incorrect or duplicate ACK received: expected seq={self.pending_ack_seq}, got seq={segment.sequence_number}")
             
     def send_ack(self, ack_seq):
         """Create and send an ACK segment with the given sequence number."""
@@ -208,9 +208,9 @@ class Host:
             sequence_number=ack_seq,
             data=b""
     )
-        print_log(self.name, 4, f"Segment created by adding transport layer header (ACK, seq={ack_seq})")
-        print_log(self.name, 4, f"ACK sent: seq={ack_seq}")
-        print_log(self.name, 4, "Segment sent to Network Layer")
+        log(self.name, 4, f"Segment created by adding transport layer header (ACK, seq={ack_seq})")
+        log(self.name, 4, f"ACK sent: seq={ack_seq}")
+        log(self.name, 4, "Segment sent to Network Layer")
 
         ack_bytes = ack_segment.to_bytes()
         self.send_to_net_layer(ack_bytes, self.sender_ip)
@@ -233,17 +233,17 @@ class Host:
             payload=segment_bytes
         )
         
-        print_log(self.name, 3, f"Segment received from Transport Layer: SRC_IP={self.ip}, DST_IP={dest_ip}, TTL={DEFAULT_TTL}")
-        print_log(self.name, 3, f"Destination IP read: {dest_ip}")
-        print_log(self.name, 3, "Routing table lookup performed")
+        log(self.name, 3, f"Segment received from Transport Layer: SRC_IP={self.ip}, DST_IP={dest_ip}, TTL={DEFAULT_TTL}")
+        log(self.name, 3, f"Destination IP read: {dest_ip}")
+        log(self.name, 3, "Routing table lookup performed")
         
         # Find next hop IP from routing table
         route_entry = lookup_route(dest_ip, self.route_table)
         next_ip = route_entry.next_hop_ip if route_entry.next_hop_ip else dest_ip
         
-        print_log(self.name, 3, f"Next-hop IP determined: {next_ip}")
-        print_log(self.name, 3, "Outgoing interface selected")
-        print_log(self.name, 3, "Packet forwarded to Data Link Layer")
+        log(self.name, 3, f"Next-hop IP determined: {next_ip}")
+        log(self.name, 3, "Outgoing interface selected")
+        log(self.name, 3, "Packet forwarded to Data Link Layer")
         
         # Send to data link layer
         packet_bytes = ip_packet.to_bytes()
@@ -256,14 +256,14 @@ class Host:
         """
         ip_packet = IPPacket.from_bytes(packet_bytes)
         
-        print_log(self.name, 3, f"Packet received from Data Link Layer: SRC_IP={ip_packet.src_ip}, DST_IP={ip_packet.dst_ip}, TTL={ip_packet.ttl}")
-        print_log(self.name, 3, f"Destination IP read: {ip_packet.dst_ip}")
+        log(self.name, 3, f"Packet received from Data Link Layer: SRC_IP={ip_packet.src_ip}, DST_IP={ip_packet.dst_ip}, TTL={ip_packet.ttl}")
+        log(self.name, 3, f"Destination IP read: {ip_packet.dst_ip}")
         
         # Check destination IP
         if ip_packet.dst_ip == self.ip:
             # This packet is for me
-            print_log(self.name, 3, "Packet identified as local delivery")
-            print_log(self.name, 3, "Segment delivered to Transport Layer")
+            log(self.name, 3, "Packet identified as local delivery")
+            log(self.name, 3, "Segment delivered to Transport Layer")
             
             # Remember sender IP for ACK reply
             self.sender_ip = ip_packet.src_ip
@@ -280,12 +280,12 @@ class Host:
         Make ethernet frame and send out.
         Need to find MAC address for next hop.
         """
-        print_log(self.name, 2, "Packet received from Network Layer")
+        log(self.name, 2, "Packet received from Network Layer")
         
         # Look up MAC address in ARP table
         dest_mac = self.arp_map.get(next_hop_ip)
         
-        print_log(self.name, 2, f"Destination MAC lookup for next-hop IP ({next_hop_ip}) → {dest_mac}")
+        log(self.name, 2, f"Destination MAC lookup for next-hop IP ({next_hop_ip}) → {dest_mac}")
         
         # Make ethernet frame
         eth_frame = EthernetFrame(
@@ -295,8 +295,8 @@ class Host:
             payload=packet_bytes
         )
         
-        print_log(self.name, 2, f"Frame created: SRC_MAC={self.mac}, DST_MAC={dest_mac}")
-        print_log(self.name, 2, "Frame sent")
+        log(self.name, 2, f"Frame created: SRC_MAC={self.mac}, DST_MAC={dest_mac}")
+        log(self.name, 2, "Frame sent")
         
         # Send through simulator
         if self.sim:
@@ -307,14 +307,14 @@ class Host:
         Receive ethernet frame.
         Learn MAC address and pass to network layer.
         """
-        print_log(self.name, 2, "Frame received")
+        log(self.name, 2, "Frame received")
         
         # Parse the frame
         eth_frame = EthernetFrame.from_bytes(frame_bytes)
         
         # Learn the source MAC
-        print_log(self.name, 2, f"Source MAC learned: {eth_frame.src_mac}")
-        print_log(self.name, 2, "Packet delivered to Network Layer")
+        log(self.name, 2, f"Source MAC learned: {eth_frame.src_mac}")
+        log(self.name, 2, "Packet delivered to Network Layer")
         
         # Give packet to network layer
         self.recv_from_link_layer(eth_frame.payload)
@@ -372,11 +372,11 @@ class Router:
         Learn MAC address and forward to network layer.
         """
         interface_num = if_name[-1]
-        print_log(self.name, 2, f"Frame received on Interface {interface_num}")
+        log(self.name, 2, f"Frame received on Interface {interface_num}")
         
         # Parse frame
         eth_frame = EthernetFrame.from_bytes(frame_bytes)
-        print_log(self.name, 2, f"Source MAC learned: {eth_frame.src_mac} on Interface {interface_num}")
+        log(self.name, 2, f"Source MAC learned: {eth_frame.src_mac} on Interface {interface_num}")
         
         # Learn MAC address from packet
         ip_packet = IPPacket.from_bytes(eth_frame.payload)
@@ -385,18 +385,18 @@ class Router:
         else:
             self.mac_table_if2[ip_packet.src_ip] = eth_frame.src_mac
         
-        print_log(self.name, 2, "Packet delivered to Network Layer")
+        log(self.name, 2, "Packet delivered to Network Layer")
         
         # Give packet to network layer
-        self.do_forwarding(eth_frame.payload)
+        self.forward_packet(eth_frame.payload)
     
     def send_on_interface(self, packet_bytes, if_name, dest_mac_addr):
         """
         Send frame on interface.
         Make frame and send out through interface.
         """
-        print_log(self.name, 2, "Packet received from Network Layer")
-        print_log(self.name, 2, f"Destination MAC lookup for next-hop IP → {dest_mac_addr}")
+        log(self.name, 2, "Packet received from Network Layer")
+        log(self.name, 2, f"Destination MAC lookup for next-hop IP → {dest_mac_addr}")
         
         # Choose source MAC base on interface
         if if_name == "if1":
@@ -413,8 +413,8 @@ class Router:
         )
         
         interface_num = if_name[-1]
-        print_log(self.name, 2, f"Frame created: SRC_MAC={source_mac}, DST_MAC={dest_mac_addr}")
-        print_log(self.name, 2, f"Frame forwarded on Interface {interface_num}")
+        log(self.name, 2, f"Frame created: SRC_MAC={source_mac}, DST_MAC={dest_mac_addr}")
+        log(self.name, 2, f"Frame forwarded on Interface {interface_num}")
         
         # Send through simulator
         if self.sim:
@@ -424,27 +424,27 @@ class Router:
     # Layer 3 Functions
     # ----------------------------
     
-    def do_forwarding(self, packet_bytes):
+    def forward_packet(self, packet_bytes):
         """
         Forward packet to destination.
         Decrease TTL and check routing table.
         """
         ip_packet = IPPacket.from_bytes(packet_bytes)
         
-        print_log(self.name, 3, f"Packet received from Data Link Layer: SRC_IP={ip_packet.src_ip}, DST_IP={ip_packet.dst_ip}, TTL={ip_packet.ttl}")
-        print_log(self.name, 3, f"Destination IP read: {ip_packet.dst_ip}")
+        log(self.name, 3, f"Packet received from Data Link Layer: SRC_IP={ip_packet.src_ip}, DST_IP={ip_packet.dst_ip}, TTL={ip_packet.ttl}")
+        log(self.name, 3, f"Destination IP read: {ip_packet.dst_ip}")
         
         # Decrease TTL by 1
         old_ttl_value = ip_packet.ttl
         ip_packet.ttl = ip_packet.ttl - 1
-        print_log(self.name, 3, f"TTL decremented: {old_ttl_value} → {ip_packet.ttl}")
+        log(self.name, 3, f"TTL decremented: {old_ttl_value} → {ip_packet.ttl}")
         
         # Check if TTL become 0
         if ip_packet.ttl == 0:
-            print_log(self.name, 3, "Packet dropped (TTL expired)")
+            log(self.name, 3, "Packet dropped (TTL expired)")
             return
         
-        print_log(self.name, 3, "Routing table lookup performed")
+        log(self.name, 3, "Routing table lookup performed")
         
         # Find route from routing table
         route_entry = lookup_route(ip_packet.dst_ip, self.route_table)
@@ -452,9 +452,9 @@ class Router:
         out_interface = route_entry.outgoing_interface
         
         interface_num = out_interface[-1]
-        print_log(self.name, 3, f"Next-hop IP determined: {next_hop_ip}")
-        print_log(self.name, 3, f"Outgoing interface selected (Interface {interface_num})")
-        print_log(self.name, 3, "Packet forwarded to Data Link Layer")
+        log(self.name, 3, f"Next-hop IP determined: {next_hop_ip}")
+        log(self.name, 3, f"Outgoing interface selected (Interface {interface_num})")
+        log(self.name, 3, "Packet forwarded to Data Link Layer")
         
         # Find MAC address from learning table
         if out_interface == "if1":
@@ -471,10 +471,9 @@ class Router:
 # Build Topology Function
 # ----------------------------
 
-def build_topology():
+def make_network():
     """
-    Build the network topology.
-    Create simulator, hosts and router, connect them together.
+    Set up Host A, Router R1, Host B and connect them to the simulator.
     """
     # Create simulator
     sim = Simulator()
