@@ -161,7 +161,6 @@ class Host:
         self.pending_dest_ip = None
         self.ack_received = False
 
-
     def recv_from_net_layer(self, seg_bytes):
         """
         Receive segment from network layer.

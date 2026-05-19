@@ -19,8 +19,6 @@ CITS3002 Project - Network Protocol Implementation
 This project implement a simple internet protocol stack simulator.
 It simulate data transmission from Host A to Host B through Router R1.
 
-
-
 ## Code Structure
 
 ### Class Hierarchy
