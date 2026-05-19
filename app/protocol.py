@@ -9,21 +9,19 @@ map to bytes for encapsulation/decapsulation. Wire format uses network byte orde
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Final
 
 from config import IP_PROTOCOL_UDP
 
-# --- Layout sizes ------------------------------------------------------------------
+# Layout sizes
+MAC_LEN = 6
+ETH_HEADER_LEN = MAC_LEN + MAC_LEN + 2
 
-MAC_LEN: Final[int] = 6
-ETH_HEADER_LEN: Final[int] = MAC_LEN + MAC_LEN + 2
+IP_HEADER_LEN = 4 + 4 + 1 + 1 + 2  # src, dst, ttl, proto, total_length
 
-IP_HEADER_LEN: Final[int] = 4 + 4 + 1 + 1 + 2  # src, dst, ttl, proto, total_length
+UDP_HEADER_LEN = 2 + 2 + 2 + 2 + 1 + 1  # ports, length, checksum, type, seq
 
-UDP_HEADER_LEN: Final[int] = 2 + 2 + 2 + 2 + 1 + 1  # ports, length, checksum, type, seq
-
-SEGMENT_TYPE_DATA: Final[int] = 0
-SEGMENT_TYPE_ACK: Final[int] = 1
+SEGMENT_TYPE_DATA = 0
+SEGMENT_TYPE_ACK = 1
 
 
 def mac_to_bytes(mac: str) -> bytes:

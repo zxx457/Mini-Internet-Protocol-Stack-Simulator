@@ -238,7 +238,7 @@ class Host:
         print_log(self.name, 3, "Routing table lookup performed")
         
         # Find next hop IP from routing table
-        route_entry = longest_prefix_match(dest_ip, self.route_table)
+        route_entry = lookup_route(dest_ip, self.route_table)
         next_ip = route_entry.next_hop_ip if route_entry.next_hop_ip else dest_ip
         
         print_log(self.name, 3, f"Next-hop IP determined: {next_ip}")
@@ -447,7 +447,7 @@ class Router:
         print_log(self.name, 3, "Routing table lookup performed")
         
         # Find route from routing table
-        route_entry = longest_prefix_match(ip_packet.dst_ip, self.route_table)
+        route_entry = lookup_route(ip_packet.dst_ip, self.route_table)
         next_hop_ip = route_entry.next_hop_ip if route_entry.next_hop_ip else ip_packet.dst_ip
         out_interface = route_entry.outgoing_interface
         
